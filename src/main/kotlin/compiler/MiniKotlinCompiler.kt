@@ -29,8 +29,7 @@ public class MiniProgram {
         if (name == "main") {
             return """
     public static void main(String[] args) { 
-        ${// Inside visitFunctionDeclaration for main
-                visitStatements(ctx.block().statement(), "(unused) -> {}")}
+        ${visitStatements(ctx.block().statement(), "(unused) -> {}")}
     }"""
         }
 
@@ -45,19 +44,16 @@ public class MiniProgram {
         val head = stmts.first()
         val tail = stmts.drop(1)
 
-        // Handle Return
         head.returnStatement()?.let { ret ->
             return translateExpr(ret.expression()) { result ->
                 if (currentCont != null) "$currentCont.accept($result);\nreturn;" else "return;"
             }
         }
 
-        // Handle Var Declaration
         head.variableDeclaration()?.let { decl ->
             val name = decl.IDENTIFIER().text
             val type = mapType(decl.type().text)
             return translateExpr(decl.expression()) { result ->
-                // Force the semicolon and a newline here
                 "$type $name = $result;\n${visitStatements(tail, currentCont)}"
             }
         }
@@ -65,12 +61,10 @@ public class MiniProgram {
         head.variableAssignment()?.let { assign ->
             val name = assign.IDENTIFIER().text
             return translateExpr(assign.expression()) { result ->
-                // This ensures "a = 15;" is generated with a semicolon and newline
                 "$name = $result;\n${visitStatements(tail, currentCont)}"
             }
         }
 
-        // Handle If Statement
         head.ifStatement()?.let { ifStmt ->
             return translateExpr(ifStmt.expression()) { cond ->
                 val thenBlock = visitStatements(ifStmt.block(0).statement(), currentCont)
@@ -85,14 +79,12 @@ public class MiniProgram {
             }
         }
 
-        // Handle While Statement
         head.whileStatement()?.let { whileStmt ->
             val loopName = "loop${nextArg()}"
             return translateExpr(whileStmt.expression()) { cond ->
-// Inside whileStatement block
                 val body = visitStatements(whileStmt.block().statement(), "new $loopName()")
-                    .replace("i =", "i[0] =") // Highly specific hack
-                    .replace("i ", "i[0] ")   // Highly specific hack
+                    .replace("i =", "i[0] =")
+                    .replace("i ", "i[0] ")
                 val rest = visitStatements(tail, currentCont)
 
                 """
@@ -112,12 +104,8 @@ public class MiniProgram {
             }
         }
 
-        // Handle Expression statement (e.g. just calling a function)
-// Handle Expression statement
         head.expression()?.let { expr ->
             return translateExpr(expr) {
-                // We discard the 'result' here because this expression
-                // is a standalone statement (like println), not a 'val' assignment.
                 visitStatements(tail, currentCont)
             }
         }
@@ -125,10 +113,6 @@ public class MiniProgram {
         return visitStatements(tail, currentCont)
     }
 
-    /**
-     * The recursive "Expression flattener".
-     * If an expression contains a function call, it nests 'next' inside a continuation.
-     */
     private fun translateExpr(ctx: MiniKotlinParser.ExpressionContext?, next: (String) -> String): String {
         if (ctx == null) return next("null")
 
@@ -137,7 +121,6 @@ public class MiniProgram {
                 val funcName = ctx.IDENTIFIER().text
                 val argList = ctx.argumentList().expression()
 
-                // Recursively translate arguments first (in case an argument is a function call!)
                 translateArgs(argList) { translatedArgs ->
                     val resVar = nextArg()
                     val target = if (funcName == "println") "Prelude.println" else funcName
@@ -146,7 +129,6 @@ public class MiniProgram {
             }
 
             is MiniKotlinParser.MulDivExprContext -> {
-                // If you have n * factorial(n-1), we must translate both sides
                 translateExpr(ctx.expression(0)) { left ->
                     translateExpr(ctx.expression(1)) { right ->
                         next("($left ${ctx.getChild(1).text} $right)")
@@ -156,7 +138,6 @@ public class MiniProgram {
 
             is MiniKotlinParser.PrimaryExprContext -> translatePrimary(ctx.primary(), next)
 
-            // Fallback for simple binary ops: recursive descent
             is MiniKotlinParser.AddSubExprContext,
             is MiniKotlinParser.ComparisonExprContext,
             is MiniKotlinParser.EqualityExprContext -> {
@@ -178,7 +159,6 @@ public class MiniProgram {
     ): String {
         if (args.isEmpty()) return final(acc)
         return translateExpr(args.first()) { res ->
-            // Create a NEW list including the new result
             translateArgs(args.drop(1), acc + res, final)
         }
     }
