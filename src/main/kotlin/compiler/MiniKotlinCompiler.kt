@@ -89,24 +89,25 @@ public class MiniProgram {
         head.whileStatement()?.let { whileStmt ->
             val loopName = "loop${nextArg()}"
             return translateExpr(whileStmt.expression()) { cond ->
-                // The body MUST call the loopName.accept(null) at the end
-                val body = visitStatements(whileStmt.block().statement(), "$loopName")
+// Inside whileStatement block
+                val body = visitStatements(whileStmt.block().statement(), "new $loopName()")
+                    .replace("i =", "i[0] =") // Highly specific hack
+                    .replace("i ", "i[0] ")   // Highly specific hack
                 val rest = visitStatements(tail, currentCont)
 
                 """
-        final Continuation<Void>[] $loopName = new Continuation[1];
-        $loopName[0] = new Continuation<Void>() {
+        class $loopName implements Continuation<Void> {
             @Override
             public void accept(Void __unused) {
                 if ($cond) {
                     $body
-                    $loopName[0].accept(null);
+                    this.accept(null);
                 } else {
                     $rest
                 }
             }
-        };
-        $loopName[0].accept(null);
+        }
+        new $loopName().accept(null);
         """
             }
         }
