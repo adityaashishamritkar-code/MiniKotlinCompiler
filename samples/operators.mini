@@ -1,0 +1,8 @@
+fun main(): Unit {
+    var a: Int = 10
+    var b: Int = 5
+    var c: Int = 2
+    var calc: Int = a + b * c - (a / c)
+
+    println(calc)
+}

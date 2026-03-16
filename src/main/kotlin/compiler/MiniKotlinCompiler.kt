@@ -2,11 +2,11 @@ package org.example.compiler
 
 import MiniKotlinBaseVisitor
 import MiniKotlinParser
-import org.antlr.v4.runtime.tree.TerminalNode
 
 class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
 
     private var argCounter = 0
+    private val boxedVariables = mutableSetOf<String>() // Add this line
     private fun nextArg() = "arg${argCounter++}"
 
     fun compile(ctx: MiniKotlinParser.ProgramContext): String {
@@ -19,6 +19,7 @@ public class MiniProgram {
     }
 
     override fun visitFunctionDeclaration(ctx: MiniKotlinParser.FunctionDeclarationContext): String {
+        boxedVariables.clear()
         val name = ctx.IDENTIFIER().text
         val params = ctx.parameterList()?.parameter()?.joinToString(", ") {
             "${mapType(it.type().text)} ${it.IDENTIFIER().text}"
@@ -45,7 +46,11 @@ public class MiniProgram {
         val tail = stmts.drop(1)
 
         head.returnStatement()?.let { ret ->
-            return translateExpr(ret.expression()) { result ->
+            val expr = ret.expression()
+            if (expr == null) {
+                return if (currentCont != null) "$currentCont.accept(null);\nreturn;" else "return;"
+            }
+            return translateExpr(expr) { result ->
                 if (currentCont != null) "$currentCont.accept($result);\nreturn;" else "return;"
             }
         }
@@ -53,15 +58,17 @@ public class MiniProgram {
         head.variableDeclaration()?.let { decl ->
             val name = decl.IDENTIFIER().text
             val type = mapType(decl.type().text)
+            boxedVariables.add(name)
             return translateExpr(decl.expression()) { result ->
-                "$type $name = $result;\n${visitStatements(tail, currentCont)}"
+                "$type[] $name = {$result};\n${visitStatements(tail, currentCont)}"
             }
         }
 
         head.variableAssignment()?.let { assign ->
             val name = assign.IDENTIFIER().text
             return translateExpr(assign.expression()) { result ->
-                "$name = $result;\n${visitStatements(tail, currentCont)}"
+                val target = if (boxedVariables.contains(name)) "$name[0]" else name
+                "$target = $result;\n${visitStatements(tail, currentCont)}"
             }
         }
 
@@ -81,27 +88,23 @@ public class MiniProgram {
 
         head.whileStatement()?.let { whileStmt ->
             val loopName = "loop${nextArg()}"
-            return translateExpr(whileStmt.expression()) { cond ->
-                val body = visitStatements(whileStmt.block().statement(), "new $loopName()")
-                    .replace("i =", "i[0] =")
-                    .replace("i ", "i[0] ")
-                val rest = visitStatements(tail, currentCont)
+            val rest = visitStatements(tail, currentCont)
 
-                """
-        class $loopName implements Continuation<Void> {
-            @Override
-            public void accept(Void __unused) {
-                if ($cond) {
-                    $body
-                    this.accept(null);
-                } else {
-                    $rest
-                }
-            }
-        }
-        new $loopName().accept(null);
-        """
-            }
+            return """
+    Continuation<Void>[] $loopName = new Continuation[1];
+    $loopName[0] = (__unused) -> {
+        ${translateExpr(whileStmt.expression() as MiniKotlinParser.ExpressionContext)  { cond ->
+                val body = visitStatements(whileStmt.block().statement(), "$loopName[0]")
+                """if ($cond) {
+                $body
+                $loopName[0].accept(null);
+            } else {
+                $rest
+            }"""
+            }}
+    };
+    $loopName[0].accept(null);
+    """
         }
 
         head.expression()?.let { expr ->
@@ -136,9 +139,14 @@ public class MiniProgram {
                 }
             }
 
-            is MiniKotlinParser.PrimaryExprContext -> translatePrimary(ctx.primary(), next)
+            is MiniKotlinParser.AddSubExprContext -> {
+                translateExpr(ctx.expression(0)) { left ->
+                    translateExpr(ctx.expression(1)) { right ->
+                        next("($left ${ctx.getChild(1).text} $right)")
+                    }
+                }
+            }
 
-            is MiniKotlinParser.AddSubExprContext,
             is MiniKotlinParser.ComparisonExprContext,
             is MiniKotlinParser.EqualityExprContext -> {
                 translateExpr(ctx.getChild(0) as MiniKotlinParser.ExpressionContext) { left ->
@@ -148,7 +156,36 @@ public class MiniProgram {
                 }
             }
 
-            else -> next(ctx.text)
+            is MiniKotlinParser.AndExprContext -> {
+                translateExpr(ctx.expression(0)) { left ->
+                    translateExpr(ctx.expression(1)) { right ->
+                        next("($left && $right)")
+                    }
+                }
+            }
+            is MiniKotlinParser.OrExprContext -> {
+                translateExpr(ctx.expression(0)) { left ->
+                    translateExpr(ctx.expression(1)) { right ->
+                        next("($left || $right)")
+                    }
+                }
+            }
+            is MiniKotlinParser.NotExprContext -> {
+                translateExpr(ctx.expression()) { operand ->
+                    next("(!$operand)")
+                }
+            }
+
+            is MiniKotlinParser.PrimaryExprContext -> translatePrimary(ctx.primary(), next)
+
+            else -> {
+                val text = ctx.text
+                if (boxedVariables.contains(text)) {
+                    next("$text[0]")
+                } else {
+                    next(text)
+                }
+            }
         }
     }
 
@@ -164,11 +201,17 @@ public class MiniProgram {
     }
 
     private fun translatePrimary(ctx: MiniKotlinParser.PrimaryContext, next: (String) -> String): String {
-        val child = ctx.getChild(0)
-        return when (child) {
-            is MiniKotlinParser.ParenExprContext -> translateExpr(child.expression(), next)
-            else -> next(ctx.text)
+        if (ctx is MiniKotlinParser.IdentifierExprContext) {
+            val name = ctx.IDENTIFIER().text
+            val access = if (boxedVariables.contains(name)) "$name[0]" else name
+            return next(access)
         }
+
+        if (ctx is MiniKotlinParser.ParenExprContext) {
+            return translateExpr(ctx.expression(), next)
+        }
+
+        return next(ctx.text)
     }
 
     private fun mapType(type: String): String = when(type) {

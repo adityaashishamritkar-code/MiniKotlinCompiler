@@ -1,0 +1,7 @@
+fun main(): Unit {
+    var x: Boolean = true
+    var y: Boolean = false
+    var result: Boolean = (x && y) || !y
+
+    println(result)
+}

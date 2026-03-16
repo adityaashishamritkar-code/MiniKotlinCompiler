@@ -1,0 +1,9 @@
+fun check(n: Int): Int {
+    return n + 1
+}
+
+fun main(): Unit {
+    var n: Int = 10
+    var res: Int = check(n)
+    println(res)
+}
